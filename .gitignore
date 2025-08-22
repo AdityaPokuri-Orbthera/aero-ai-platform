@@ -6,3 +6,5 @@ pycache/
 node_modules/
 dist/
 .pytest_cache/
+.venv/
+.venv..venv/
