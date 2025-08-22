@@ -1,10 +1,8 @@
 ﻿.venv/
 pycache/
 .env
+*.env
 *.pyc
 node_modules/
 dist/
 .pytest_cache/
-.env
-*.env
-.en
