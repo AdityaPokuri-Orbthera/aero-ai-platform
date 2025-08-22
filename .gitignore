@@ -5,3 +5,6 @@ pycache/
 node_modules/
 dist/
 .pytest_cache/
+.env
+*.env
+.en
