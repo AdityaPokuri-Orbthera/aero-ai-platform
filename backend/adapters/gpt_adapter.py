@@ -1,45 +1,38 @@
 ﻿import os
-import asyncio
-from openai import AsyncOpenAI
-from openai.error import RateLimitError, OpenAIError
+from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError, AuthenticationError
 from .base_adapter import BaseAdapter
 
+
 class OpenAIAdapter(BaseAdapter):
-    def __init__(self, model="gpt-4"):
+    def __init__(self, model: str = "gpt-4o-mini"):
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set in environment")
+        
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 
-    async def generate(self, prompt: str, max_retries: int = 3, **kwargs):
+    async def generate(self, prompt: str, **kwargs) -> str:
         """
-        Generate text using OpenAI Chat API with retry on rate limit errors.
-        
-        Args:
-            prompt (str): The input text prompt.
-            max_retries (int): Number of retry attempts for rate limits.
-            **kwargs: Additional arguments passed to the OpenAI API.
-
-        Returns:
-            str: Generated text from the model.
+        Required method that BaseAdapter enforces.
+        Sends a prompt to OpenAI and returns the model's response.
+        Extra params (temperature, max_tokens, etc.) can be passed via kwargs.
         """
-        for attempt in range(max_retries):
-            try:
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    **kwargs
-                )
-                return response.choices[0].message.content
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                **kwargs
+            )
+            return response.choices[0].message.content
 
-            except RateLimitError:
-                wait_time = 2 ** attempt  # exponential backoff
-                print(f"Rate limit hit. Retrying in {wait_time} seconds...")
-                await asyncio.sleep(wait_time)
-
-            except OpenAIError as e:
-                print(f"OpenAI API error: {e}")
-                raise e
-
-        raise Exception("Rate limit exceeded. Maximum retries reached.")
+        except RateLimitError as e:
+            raise RuntimeError(f"Rate limit exceeded: {e}") from e
+        except AuthenticationError as e:
+            raise RuntimeError(f"Authentication failed: {e}") from e
+        except APIConnectionError as e:
+            raise RuntimeError(f"Connection error: {e}") from e
+        except APIError as e:
+            raise RuntimeError(f"OpenAI API error: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error: {e}") from e
