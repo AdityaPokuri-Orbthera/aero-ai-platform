@@ -1,0 +1,6 @@
+[
+  {"id":"ksc-fl","name":"KSC LC-39A/B","country":"USA","lat_deg":28.6,"notes":"Low-inclination, high cadence"},
+  {"id":"vandenberg","name":"Vandenberg SLC-4E","country":"USA","lat_deg":34.7,"notes":"Polar/Sun-synchronous"},
+  {"id":"kourou","name":"Guiana Space Centre","country":"FRA","lat_deg":5.2,"notes":"Excellent equatorial performance"},
+  {"id":"satish-dhawan","name":"Satish Dhawan","country":"IND","lat_deg":13.7,"notes":"Low-inclination capable"}
+]

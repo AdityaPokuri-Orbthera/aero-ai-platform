@@ -1,0 +1,46 @@
+aero-ai-platform/
+├── frontend/                     # Touchscreen sketch UI
+│   ├── public/
+│   ├── src/
+│   │   ├── components/           # UI components (canvas, panels)
+│   │   ├── pages/                # Main app views
+│   │   ├── services/             # API calls
+│   │   └── App.tsx
+│   └── package.json
+│
+├── backend/
+│   ├── api/
+│   │   ├── controllers/          # REST/GraphQL endpoints
+│   │   ├── routes/
+│   │   └── index.py
+│   ├── core/
+│   │   ├── orchestrator.py       # AI orchestration (switch GPT/Claude)
+│   │   ├── sketch_parser.py      # Doodle → vector pipeline
+│   │   ├── physics_engine.py     # Basic rocket dimension calculator
+│   │   ├── trajectory_sim.py     # Simple trajectory sim
+│   │   └── knowledge_base.py     # Access aerospace DB
+│   ├── adapters/
+│   │   ├── gpt_adapter.py
+│   │   ├── claude_adapter.py
+│   │   └── base_adapter.py
+│   ├── db/
+│   │   ├── models.py
+│   │   └── schema.sql
+│   ├── tests/
+│   └── requirements.txt
+│
+├── data/
+│   ├── sample_sketches/          # Training/test sketches
+│   ├── aerospace_specs/          # Specs DB (CSV/JSON)
+│   └── simulations/              # Sim outputs
+│
+├── infra/
+│   ├── docker-compose.yml
+│   ├── k8s/                      # Future deployment manifests
+│   └── README.md
+│
+├── docs/
+│   ├── architecture.md
+│   └── roadmap.md
+│
+└── README.md

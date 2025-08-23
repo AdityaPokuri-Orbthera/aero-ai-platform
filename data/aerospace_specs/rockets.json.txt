@@ -1,0 +1,57 @@
+[
+  {
+    "id": "falcon9",
+    "name": "Falcon 9",
+    "manufacturer": "SpaceX",
+    "stages": 2,
+    "height_m": 70,
+    "diameter_m": 3.7,
+    "liftoff_mass_t": 549,
+    "payload_leo_kg": 22800,
+    "payload_gto_kg": 8300,
+    "engines": [
+      {"stage": 1, "type": "Merlin 1D", "count": 9, "thrust_sea_level_kN": 7607, "isp_s": 282},
+      {"stage": 2, "type": "Merlin Vacuum", "count": 1, "thrust_vac_kN": 981, "isp_s": 348}
+    ],
+    "propellants": ["RP-1", "LOX"],
+    "reusable": true,
+    "notes": "Workhorse orbital launch vehicle; booster landing and reuse."
+  },
+  {
+    "id": "electron",
+    "name": "Electron",
+    "manufacturer": "Rocket Lab",
+    "stages": 2,
+    "height_m": 18,
+    "diameter_m": 1.2,
+    "liftoff_mass_t": 13,
+    "payload_leo_kg": 300,
+    "payload_gto_kg": 0,
+    "engines": [
+      {"stage": 1, "type": "Rutherford", "count": 9, "thrust_sea_level_kN": 162, "isp_s": 311},
+      {"stage": 2, "type": "Rutherford Vacuum", "count": 1, "thrust_vac_kN": 25.8, "isp_s": 343}
+    ],
+    "propellants": ["RP-1", "LOX"],
+    "reusable": false,
+    "notes": "Small sat launcher; electric turbo-pumps."
+  },
+  {
+    "id": "saturnv",
+    "name": "Saturn V",
+    "manufacturer": "NASA",
+    "stages": 3,
+    "height_m": 110.6,
+    "diameter_m": 10.1,
+    "liftoff_mass_t": 2970,
+    "payload_leo_kg": 140000,
+    "payload_tli_kg": 48000,
+    "engines": [
+      {"stage": 1, "type": "F-1", "count": 5, "thrust_sea_level_kN": 33900, "isp_s": 263},
+      {"stage": 2, "type": "J-2", "count": 5, "thrust_vac_kN": 5115, "isp_s": 421},
+      {"stage": 3, "type": "J-2", "count": 1, "thrust_vac_kN": 1023, "isp_s": 421}
+    ],
+    "propellants": ["RP-1/LOX (S-IC)", "LH2/LOX (S-II/S-IVB)"],
+    "reusable": false,
+    "notes": "Apollo program heavy launcher; TLI capability."
+  }
+]

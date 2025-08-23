@@ -1,0 +1,5 @@
+[
+  {"id":"south-pole","name":"South Pole rim (Shackleton)","traits":["illumination","water ice potential","communications relays recommended"]},
+  {"id":"oceanus-procellarum","name":"Oceanus Procellarum","traits":["flat mare","heritage sites nearby"]},
+  {"id":"mare-tranquillitatis","name":"Mare Tranquillitatis","traits":["flat mare","Apollo 11 heritage"]}
+]

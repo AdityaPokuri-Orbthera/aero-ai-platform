@@ -1,0 +1,96 @@
+1. Updated Modular Architecture (with AI-first focus)
+Core Concept:
+
+A modular software platform that allows users to sketch/doodle rockets or satellites on a touchscreen, then uses AI reasoning + aerospace models to:
+Interpret the design
+Generate specs (dimensions, thrust, payload, etc.)
+Simulate feasibility of space missions (e.g., to the Moon)
+Output manufacturing, cost, and engineering requirements
+
+Architecture Overview
+
+
++------------------------------------------------------------+
+|                       User Interface                       |
+|   (Touchscreen Sketch UI, Visualization, Reports)          |
++------------------------------------------------------------+
+                           |
+                           v
++------------------------------------------------------------+
+|                    Sketch & Input Parser                   |
+|  - Doodle → Geometry Parser (CV + AI)                      |
+|  - Extracts features (fins, stages, engines, tanks)        |
++------------------------------------------------------------+
+                           |
+                           v
++------------------------------------------------------------+
+|                 AI Orchestration Layer                     |
+|  - Plug-and-play AI adapters (GPT-5, Claude, Custom ML)    |
+|  - send_query(data), receive_response() API                |
+|  - Specialized aerospace reasoning prompts                 |
++------------------------------------------------------------+
+                           |
+   -----------------------------------------------------------
+   |             |                 |              |           |
+   v             v                 v              v           v
++---------+  +-----------+   +------------+   +-----------+  +------------------+
+| Physics |  | Mission   |   | Parametric |   | BOM/      |  | Knowledge Base   |
+| Engine  |  | Planner   |   | Modeler    |   | Materials |  | (Datasets, NASA, |
+| (Orbital|  | (Trajectory|  | (CAD-lite) |   | & Supply  |  | SpaceX, ESA etc) |
+| Sim,    |  | Simulation)|  | Dimensions |   | Chain AI  |  | Pre-trained +    |
+| Propul- |  |            |  | & Scaling  |   |           |  | fine-tuned AI    |
+| sion,   |  |            |  |            |   |           |  | modules          |
++---------+  +-----------+   +------------+   +-----------+  +------------------+
+
+                           |
+                           v
++------------------------------------------------------------+
+|                  Visualization & Reports                   |
+|  - 3D models, graphs, flight path animations               |
+|  - Investor-ready dashboards (cost, specs, feasibility)    |
++------------------------------------------------------------+
+
+
+3. 1–2 Month Task Plan (Working Demo for Investors)
+Goal for Demo:
+
+User sketches rocket → AI interprets it → generates dimensions/specs → simulates basic trajectory → shows visualization + feasibility report.
+
+Phase 1 (Week 1–2) – Foundations
+✅ Set up project repo & folder structure
+✅ Implement AI Orchestration Layer + base adapter class
+✅ Add GPT-5 (or GPT-4 if easier now) as first working adapter
+✅ Create dummy knowledge base (JSON with rocket specs)
+✅ Build minimal Streamlit UI with canvas to upload doodle (simple line shapes)
+
+Phase 2 (Week 3–4) – Doodle Parsing → Specs
+Implement simple sketch parser (e.g., detect rocket body vs fins vs stages)
+Connect parser → AI adapter → output "mock" rocket specs (length, mass, thrust placeholder)
+Implement parametric modeler (rule-based + AI help for dimension scaling)
+Add backend service: "Generate Rocket Spec Report"
+
+Phase 3 (Week 5–6) – Physics + Mission Simulation
+Implement basic thrust & mass calculation (rule-of-thumb equations)
+Add orbital simulation stub (2-body simulation Earth ↔ Moon)
+Link mission planner output → trajectory visualization (Matplotlib 2D path first)
+Create report generator: specs + trajectory + feasibility text
+
+Phase 4 (Week 7–8) – Investor Demo Polish
+Improve UI: draw rocket → get instant 3D-ish visualization (simplified CAD via matplotlib/plotly)
+Add Claude AI adapter to prove plug-and-play capability
+Expand KB with real NASA/ESA rocket data for grounding
+Integrate cost estimator (basic BOM with materials & cost curve)
+Package investor demo (clean UI flow: sketch → specs → mission feasibility → cost report)
+
+Long-Term Tasks (Post-Demo, Continuous Dev)
+Integrate real CV model (OpenCV + Deep Learning for sketch parsing)
+Expand physics engine (aerodynamics, staging, advanced propellant models)
+Connect to CAD APIs (Fusion360, SolidWorks) for export
+Build manufacturing pipeline integration (supply chain AI)
+Fine-tune AI models on aerospace corpora (papers, specs, CAD)
+
+✅ After 2 months → You’ll have a working demo where investors can:
+Draw a rocket doodle → see specs & dimensions
+Simulate a basic Moon mission trajectory
+Get feasibility & cost breakdown
+See AI orchestration with swappable models

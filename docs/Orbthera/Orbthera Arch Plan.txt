@@ -1,0 +1,168 @@
+# Project: Sketch → Real Rocket Designer — Modular Architecture & 5‑Phase Plan
+
+> New scope: turn touchscreen doodles into real‑world rocket designs and executable plans. The system accepts a hand‑drawn sketch (touch/pen input), interprets the sketch into a parametric rocket model, estimates dimensions, mass, propulsion needs, staging, flight profile to the Moon, manufacturing requirements, cost estimates, safety/regulatory notes, and a step‑by‑step plan to make the rocket real.
+
+---
+
+## Vision (one sentence)
+
+From doodle to do-able: let users sketch a rocket on a touchscreen and get a validated, engineering‑backed plan (specs, sims, BOM, costs, timelines) to turn that sketch into a real mission to the Moon.
+
+---
+
+## Core capabilities (MVP to long term)
+
+* **Sketch ingestion & semantic parsing** (touch input → vector strokes → interpreted parts).
+* **Parametric model generation** (convert sketch to 2D parametric blueprint & 3D model).
+* **Preliminary engineering estimation** (dimensions, center of mass, propellant mass, Δv budget, staging options).
+* **Mission planning & simulation** (trajectory to lunar insertion, margin analysis, delta‑v budgets using patched‑conic or simple orbital mechanics).
+* **Manufacturability & BOM** (materials, suppliers, rough cost & lead times, fabrication suggestions).
+* **Explainable AI assistant** (LLM + domain models to explain how to realize the design, regulations, test plans).
+* **Interactive touch UX** (drag to adjust proportions, live re‑estimate, exportable reports).
+
+---
+
+## Modular Architecture (high level)
+
+```
+[Touch UI]  <-->  [Sketch Parser]  <-->  [Parametric Modeler]  <-->  [Engineering Estimator]
+                                            |                        |
+                                            v                        v
+                                       [3D Visualizer]        [Mission Planner & Simulator]
+                                            |                        |
+                                            v                        v
+                                        [BOM Generator]        [Safety & Regulatory Adviser]
+                                            \_________________________/
+                                                      |
+                                               [AI Interface Hub]
+                                                     |
+                                               [Cloud/Edge Services]
+```
+
+### Modules (single-sentence roles)
+
+1. **Touch UI** — capture strokes, provide smoothing, gestures, and editing tools (undo, reflow).
+2. **Sketch Parser** — stroke segmentation, symbol recognition (nose, fins, engines, stages), semantic labeling.
+3. **Parametric Modeler** — translate labeled sketch into a parameterized 2D/3D model (lengths, diameters, joints).
+4. **Engineering Estimator** — compute approximate mass, structural sizing, propellant fraction, Δv per stage using simplified rocketry equations (Tsiolkovsky).
+5. **Mission Planner & Simulator** — run patched‑conic ballistic sim or integrate with poliastro / GMAT for trajectory and fuel budgets to lunar orbit.
+6. **3D Visualizer** — WebGL viewer to rotate and visually inspect parametric model; allow proportions editing via touch.
+7. **BOM & Supplier Engine** — map components to materials, suggest manufacturing methods, estimate costs and lead times using price database & heuristics.
+8. **Safety & Regulatory Adviser** — give high‑level regulatory checkpoints (national export controls, FAA/AST process, test requirements).
+9. **AI Interface Hub** — standardized adapter pattern to query LLMs (for natural language guidance), domain models, and local inference models.
+10. **Cloud Services & Data Lake** — store designs, simulation runs, user accounts, and telemetry for later model improvements.
+
+---
+
+## Data contracts & interfaces (brief)
+
+* **StrokeEvent**: `{id, user_id, ts, points:[(x,y,t)], pressure?, tool}`.
+* **ParsedSketch**: `{parts:[{type, bbox, strokes, confidence}], inferred_axes, suggested_stages}`.
+* **ParamModel**: `{stages:[{length_m, diameter_m, propellant_type, isp_s, structural_mass_kg, engine_thrust_N}], total_mass_kg, cg_m}`.
+* **EstimateReport**: `{delta_v_kms, burn_time_s, margins, failure_modes, cost_estimate_usd, lead_time_days}`.
+* **MissionPlan**: `{launch_site, ascent_profile, orbit_phasing, translunar_injection, lunar_insertion, delta_v_budget}`.
+
+Use JSON Schema / OpenAPI for UI ↔ backend and Protobuf/gRPC for internal services if you need high throughput.
+
+---
+
+## Tech Stack (opinionated MVP)
+
+* **Frontend**: React + TypeScript, React‑Sketch or Paper.js for strokes; WebGL via three.js or Babylon.js. Use React Native or Ionic if mobile tablet target.
+* **Sketch Parser**: Python with PyTorch for stroke segmentation + a small transformer/seq2seq model, or a deterministic ruleset + lightweight CNN. Use ONNX for edge inference.
+* **Parametric Modeler**: Python app using computational geometry (Shapely, trimesh), export to glTF/STL. Optionally Rust for perf.
+* **Estimator & Simulator**: Python (NumPy, poliastro, astropy) for orbital mechanics; SciPy for optimization. Use simplified Tsiolkovsky & patched‑conic as MVP.
+* **BOM Engine**: Node/Python service that queries a pricing DB (initially CSV/Parquet) and supplier heuristics.
+* **AI**: LLMs via adapter (OpenAI/Anthropic/Local LlamaX) for explanations, step lists, compliance notes. Local models for numeric predictions.
+* **Storage**: Postgres for metadata, S3/MinIO for assets, ClickHouse/Timescale for simulation telemetry.
+* **Deployment**: k3s/dev‑k8s for demos; CI with GitHub Actions; Helmfile like before.
+* **Security**: Keycloak + Vault as earlier.
+
+---
+
+## 5 Phases & Deliverables (timeline: 6–12 months recommended; MVP in 8–10 weeks)
+
+### Phase 0 — Discovery & Dataset Prep (1–2 weeks)
+
+**Goal:** collect sketches, create ontology, assemble domain heuristics.
+**Tasks:** define part vocabulary (nose, payload, fairing, stage, engine, fin), gather sample sketches (50–200), assemble lookup tables for propellant ISPs, material densities, engine classes.
+**Deliverable:** spec doc + small labeled dataset and heuristic rules.
+
+### Phase 1 — Touch UI + Sketch Parser (Weeks 1–4) — MVP focus #1
+
+**Goal:** let users draw and get a parsed, labeled sketch.
+**Tasks:** implement touchscreen canvas; capture strokes; basic smoothing; build stroke segmentation + shape recognition (rules + ML classifier); create API to return `ParsedSketch`.
+**Deliverable:** interactive sketching app that identifies parts with >80% accuracy on test set.
+
+### Phase 2 — Parametric Modeler & Live Estimator (Weeks 3–7) — MVP focus #2
+
+**Goal:** convert parsed sketch into parametric model and produce engineering estimates in real time.
+**Tasks:** map part dimensions (from pixel → meters via user scale control), assemble stage proposals, compute rough masses (empirical mass fraction), compute Δv per stage using Tsiolkovsky eq., show CG/COM, and indicate viability. Provide edit handles for user to tweak dimensions and instantly re‑estimate.
+**Deliverable:** live UI with 2D/3D preview + instant engineering report (dimensions, total mass, delta‑v estimate, staging suggestion).
+
+### Phase 3 — Mission Planning & Simulation (Weeks 6–10)
+
+**Goal:** plan trajectory to the Moon and compute mission feasibility (fuel, staging).
+**Tasks:** integrate poliastro or a lightweight patched‑conic sim, estimate translunar injection Δv, lunar insertion, and margins. Allow user to choose launch site and see mission timeline and fuel needs. Implement Monte‑Carlo sensitivity runs for main uncertainties.
+**Deliverable:** mission plan page with trajectory plots, Δv budget, and probability of success estimate under simple assumptions.
+
+### Phase 4 — BOM, Manufacturability & AI Assistant (Weeks 9–16)
+
+**Goal:** provide a path to manufacture: BOM, costs, supplier suggestions, test plan, and regulatory checklist. Also integrate LLM assistant for explainer narratives.
+**Tasks:** create BOM generator mapping parametric parts to materials and manufacturing methods; integrate cost database; implement LLM adapter to produce readable step‑by‑step plan, inspection & test requirements, safety notes, and regulatory pointers (FAA/AST, ITAR flags). Implement exportable PDF report.
+**Deliverable:** exportable project pack: specs, BOM with rough costs, supplier leads, test plan, regulatory checklist, and LLM‑generated guidance.
+
+### Phase 5 — Polish, Edge Cases, & Productionization (Weeks 12–ongoing)
+
+**Goal:** harden UX, add CV input (photo→sketch), improve estimation fidelity, add sharing/collaboration, and onboard real suppliers. Prepare investor demo and alpha program.
+**Tasks:** add 3D parametric editor, integrate CV for photographed sketches, hook in payment/CRM for suppliers, optimize models, add analytics and telemetry logging, implement user accounts and project versioning, begin safety/certification roadmap exploration.
+**Deliverable:** production‑ready demo environment, investor deck, pilot partner outreach list.
+
+---
+
+## Minimal Viable Demo (Investor criteria)
+
+* Touch app that converts doodle → labeled sketch.
+* Parametric 3D preview with editable handles.
+* Live engineering estimate (mass, Δv, staging suggestion).
+* Simple mission plan to the Moon with Δv budget.
+* Exportable PDF that contains specs, BOM summary, and next steps.
+
+If you achieve these within 8–10 weeks you’ll have a compelling demo for investors.
+
+---
+
+## Prioritized Task List for a Solo Founder (Top 15 to start, ordered)
+
+1. Design part ontology & collect 100–200 example sketches.
+2. Build the touchscreen canvas (React) and stroke capture pipeline.
+3. Implement pixel→metric scale UI (user provides reference length).
+4. Implement rule‑based Sketch Parser (fast path) + small ML classifier for ambiguous shapes.
+5. Parametric model mapping (pixel dims → meters → stage objects).
+6. Implement Tsiolkovsky & mass fraction estimator (edge compute).
+7. 3D preview (three.js) showing parametric model.
+8. Integrate poliastro for trajectory + Δv calculator.
+9. Simple BOM heuristic and cost table (CSV).
+10. Export to PDF generator with summary.
+11. Basic AI Adapter & prompt templates for LLM explanations.
+12. Deploy a simple backend (FastAPI) + Postgres + MinIO for assets.
+13. Automate demo scripts (recorded flow + live demo steps).
+14. Add editing handles + live re‑estimation loop.
+15. Prepare investor deck + demo video.
+
+---
+
+## Safety & Ethical Notes
+
+* System provides **preliminary** engineering guidance only — every output must include a clear legal/technical disclaimer and recommend certified engineering review and regulatory filings before any physical tests or launches.
+* Be careful with instructions that could materially enable dangerous activity (e.g., explicit ignition tests). Where content is potentially hazardous, the system should fallback to high‑level guidance and recommend qualified professionals.
+
+---
+
+## Next steps I can do right now
+
+* Generate UI wireframes for the touch canvas + inspector screens.
+* Produce starter code: React canvas + FastAPI backend + a minimal sketch parser (rules).
+* Create datasets and labeling templates for sketch parts.
+
+Which of those would you like me to start with immediately?
