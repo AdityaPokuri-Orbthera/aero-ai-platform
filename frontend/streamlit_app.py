@@ -1,567 +1,502 @@
-﻿import base64
-import io
+﻿# frontend/streamlit_app.py
+from __future__ import annotations
 import json
 import os
-from typing import List, Optional
+import re
+from typing import Any, Dict, List, Optional
 
 import requests
 import streamlit as st
-import streamlit.components.v1 as components
-from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
-# ------------------ Backend endpoints ------------------
-BACKEND_URL = os.getenv("AERO_BACKEND_URL", "http://127.0.0.1:8000")
-AI_CHAT_URL        = f"{BACKEND_URL}/ai/chat"
-KB_LIST_URL        = f"{BACKEND_URL}/kb/rockets"
-KB_SEARCH_URL      = f"{BACKEND_URL}/kb/search"
-SPECS_ESTIMATE_URL = f"{BACKEND_URL}/specs/estimate"
-MISSION_PLAN_URL   = f"{BACKEND_URL}/specs/plan"
-BLUEPRINT_URL      = f"{BACKEND_URL}/specs/blueprint.svg"
-TRAJ_URL           = f"{BACKEND_URL}/mission/trajectory.png"
-CONCEPT_COMPOSE_FROM_SPEC_URL  = f"{BACKEND_URL}/concept/compose_from_spec"  # will be called with ?mode=pure_ai
+# -------------------------------
+# Page config
+# -------------------------------
+st.set_page_config(page_title="Aero-AI Mission Studio", page_icon="🚀", layout="wide")
 
-st.set_page_config(page_title="Aero-AI (Guided)", page_icon="🚀", layout="wide")
-
-# ------------------ Session state ------------------
-for key, default in [
-    ("mode", "Guided (Beginner)"),
-    ("kb_hits", []),
-    ("spec_result", None),
-    ("mission_plan", None),
-    ("blueprint_svg", None),
-    ("sketch_b64", None),
-    ("sketch_meta", {"objects": 0, "bounding_boxes": []}),
-    ("last_run_ok", False),
-    ("bp_theme", "blueprint"),
-    ("concept_result", None),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-# ------------------ Helpers ------------------
-def kb_search(query: str, limit: int = 3) -> List[dict]:
+def _default_backend_url() -> str:
+    env = os.environ.get("BACKEND_URL")
+    if env:
+        return env
     try:
-        r = requests.get(KB_SEARCH_URL, params={"q": query, "limit": limit}, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"KB search failed: {e}")
-        return []
+        return st.secrets["BACKEND_URL"]
+    except Exception:
+        return "http://127.0.0.1:8000"
 
-def kb_list() -> List[dict]:
-    try:
-        r = requests.get(KB_LIST_URL, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"KB list failed: {e}")
-        return []
+DEFAULT_BACKEND_URL = _default_backend_url()
+TIMEOUT_S = 60
 
-def post_json(url: str, payload: dict, timeout: int = 30) -> dict:
+# -------------------------------
+# Session state
+# -------------------------------
+if "backend_url" not in st.session_state:
+    st.session_state.backend_url = DEFAULT_BACKEND_URL
+if "model_choice" not in st.session_state:
+    st.session_state.model_choice = "OpenAI – gpt-4o-mini"
+
+# chat + concept state
+st.session_state.setdefault("history", [])
+st.session_state.setdefault("last_concept", None)
+st.session_state.setdefault("last_spec", None)
+st.session_state.setdefault("last_target", "LEO")
+st.session_state.setdefault("last_origin", None)
+
+# canvas state (IMPORTANT: never collide with widget key)
+st.session_state.setdefault("canvas_version", 0)         # bump to clear canvas
+st.session_state.setdefault("mission_canvas_json", None) # where we store drawn JSON
+
+def get_backend_url() -> str:
+    return (st.session_state.backend_url or DEFAULT_BACKEND_URL).rstrip("/")
+
+def _model_id_from_choice(choice: str) -> str:
+    mapping = {
+        "OpenAI – gpt-4o-mini": "gpt-4o-mini",
+        "OpenAI – gpt-4o": "gpt-4o",
+        "OpenAI – o3-mini": "o3-mini",
+        "OpenAI – gpt-4.1": "gpt-4.1",
+    }
+    return mapping.get(choice, "gpt-4o-mini")
+
+# -------------------------------
+# HTTP helper
+# -------------------------------
+def api_post(path: str, payload: dict, timeout: int = TIMEOUT_S) -> dict:
+    url = f"{get_backend_url()}{path}"
     try:
         r = requests.post(url, json=payload, timeout=timeout)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # try to show FastAPI detail
+            try:
+                j = r.json()
+                detail = j.get("detail")
+                raise RuntimeError(f"{r.status_code} {r.reason}: {detail}")
+            except ValueError:
+                raise RuntimeError(f"{r.status_code} {r.reason}: {r.text}")
         return r.json()
-    except ValueError:
-        return {"_raw_text": r.text}
-    except Exception as e:
-        return {"error": str(e)}
+    except requests.RequestException as e:
+        raise RuntimeError(f"Request error calling {url}: {e}") from e
 
-def call_ai(prompt: str, temperature: float = 0.2, max_tokens: Optional[int] = None,
-            provider: Optional[str] = None, model: Optional[str] = None) -> dict:
-    params = {}
-    if provider: params["provider"] = provider
-    if model: params["model"] = model
-    payload = {"prompt": prompt, "temperature": temperature}
-    if max_tokens is not None: payload["max_tokens"] = max_tokens
+# -------------------------------
+# Small utils
+# -------------------------------
+def strip_code_fences(s: str) -> str:
+    s = s.strip()
+    if s.startswith("```"):
+        s = re.sub(r"^```(?:json)?\s*", "", s)
+        s = re.sub(r"\s*```$", "", s)
+    return s.strip()
+
+def try_json(s: str) -> Optional[dict]:
     try:
-        r = requests.post(AI_CHAT_URL, params=params, json=payload, timeout=60)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
+        return json.loads(s)
+    except Exception:
+        return None
 
-def pil_to_base64(img: Image.Image) -> str:
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
+def coerce_overrides(obj: dict) -> dict:
+    o = {}
+    if "force_stages" in obj: o["force_stages"] = int(obj["force_stages"])
+    if "min_diameter_m" in obj: o["min_diameter_m"] = float(obj["min_diameter_m"])
+    if "target_payload_leo_kg" in obj: o["target_payload_leo_kg"] = float(obj["target_payload_leo_kg"])
+    if "scale_m_per_px" in obj: o["scale_m_per_px"] = float(obj["scale_m_per_px"])
+    return o
 
-def build_prompt(
-    user_text: str,
-    kb_hits: List[dict],
-    sketch_meta: dict,
-    sketch_b64: Optional[str],
-    spec_result: Optional[dict] = None,
-    mission_plan: Optional[dict] = None,
-) -> str:
-    # KB snippets (short, non-technical)
-    brief_blocks = []
-    for r in kb_hits:
-        payloads = []
-        if r.get("payload_leo_kg"): payloads.append(f"LEO={r['payload_leo_kg']} kg")
-        if r.get("payload_tli_kg"): payloads.append(f"TLI={r['payload_tli_kg']} kg")
-        engines = "; ".join([f"St{e.get('stage')}: {e.get('count')}× {e.get('type')}" for e in r.get("engines", [])])
-        brief = (
-            f"{r.get('name')} — stages={r.get('stages')}, H={r.get('height_m')} m, D={r.get('diameter_m')} m, "
-            f"payloads({', '.join(payloads) if payloads else 'n/a'}), engines: {engines}."
-        )
-        brief_blocks.append(brief)
-    kb_chunk = "\n".join(brief_blocks) if brief_blocks else "No KB snippets."
+def default_overrides() -> dict:
+    return {
+        "force_stages": 2,
+        "min_diameter_m": 1.4,
+        "target_payload_leo_kg": 250.0,
+        "scale_m_per_px": 0.05,
+    }
 
-    meta_chunk = json.dumps(sketch_meta, indent=2)
-    img_note = "A base64 PNG of the doodle is attached below." if sketch_b64 else "No image attached."
-    image_block = f"\n\n[DOODLE_BASE64_PNG]: {sketch_b64[:256]}... (truncated)" if sketch_b64 else ""
-
-    extra_blocks = []
-    if spec_result:
-        extra_blocks.append("SPEC_DRAFT JSON:\n" + json.dumps(spec_result, indent=2))
-    if mission_plan:
-        extra_blocks.append("MISSION_PLAN JSON:\n" + json.dumps(mission_plan, indent=2))
-    extras = ("\n\n" + "\n\n".join(extra_blocks)) if extra_blocks else ""
-
-    return (
-        "You are an aerospace design assistant for beginners. "
-        "Explain simply, keep steps clear, and avoid jargon unless necessary. "
-        "Use the structured JSON and KB below; do not invent numbers.\n\n"
-        f"USER GOAL:\n{user_text}\n\n"
-        f"KB:\n{kb_chunk}\n\n"
-        f"SKETCH META:\n{meta_chunk}\n\n"
-        f"{img_note}{image_block}{extras}"
-    )
-
-def template_bounding_boxes(stage_count: int, total_px: int = 300, max_width_px: int = 60) -> List[dict]:
+def fallback_boxes_from_canvas_json(canvas_json: dict) -> List[dict]:
     boxes = []
-    if stage_count == 2:
-        heights = [int(total_px * 0.65), int(total_px * 0.35)]
-    else:
-        heights = [int(total_px * 0.55), int(total_px * 0.30), int(total_px * 0.15)]
-    y = 20
-    x = 100
-    for h in heights:
-        boxes.append({"left": x, "top": y, "width": max_width_px, "height": h})
-        y += h
+    if not canvas_json:
+        return boxes
+    objs = canvas_json.get("objects") or []
+    for o in objs:
+        left = o.get("left"); top = o.get("top")
+        width = o.get("width"); height = o.get("height")
+        if left is not None and top is not None and width and height:
+            boxes.append({
+                "left": float(left),
+                "top": float(top),
+                "width": float(width),
+                "height": float(height)
+            })
     return boxes
 
-def guided_estimate_and_plan(
-    height_m: float,
-    min_diameter_m: float,
-    payload_target_kg: Optional[float],
-    stage_count: int,
-    upper_prop: Optional[str],
-    mission_target: str,  # "LEO" or "TLI"
-) -> tuple[Optional[dict], Optional[dict], Optional[str], Optional[bytes], Optional[str]]:
-    total_px = 300
-    m_per_px = max(0.001, height_m / total_px)
+def ensure_two_stage_boxes(boxes: List[dict]) -> List[dict]:
+    if len(boxes) >= 2:
+        return boxes[:2]
+    base_w, base_h = 90.0, 240.0
+    return [
+        {"left": 120.0, "top": 60.0, "width": base_w, "height": base_h},
+        {"left": 120.0, "top": 60.0 + base_h, "width": base_w, "height": base_h * 0.65},
+    ]
 
-    bboxes = template_bounding_boxes(stage_count, total_px=total_px,
-                                     max_width_px=max(40, int(min_diameter_m / m_per_px)))
-    sketch = {"objects": len(bboxes), "bounding_boxes": bboxes}
+def _simple_text_parse(user_text: str) -> dict:
+    t = user_text.lower()
+    out = {}
+    if any(k in t for k in ("moon", "tli", "lunar")):
+        out["_target"] = "TLI"
+    states = ["ohio","michigan","louisiana","florida","texas","california","alaska","virginia","new mexico","alabama","colorado"]
+    for s in states:
+        if s in t:
+            out["_origin_hint"] = s.title()
+            break
+    return out
 
-    overrides = {}
-    if payload_target_kg and payload_target_kg > 0:
-        overrides["target_payload_leo_kg"] = float(payload_target_kg)
-    if stage_count in (2, 3):
-        overrides["force_stages"] = stage_count
-    if upper_prop in ("LH2/LOX", "RP1/LOX"):
-        overrides["preferred_upper_propellant"] = upper_prop
-    if min_diameter_m and min_diameter_m > 0:
-        overrides["min_diameter_m"] = float(min_diameter_m)
+# -------------------------------
+# LLM calls
+# -------------------------------
+def llm_overrides_from_text(user_text: str, model_choice: str) -> dict:
+    prompt = f"""
+You extract mission intent and design hints from a user's request.
+Model hint: {model_choice}
 
-    # Deterministic backbone for testing (OK per your note)
-    est_payload = {"scale_m_per_px": float(m_per_px), "sketch": sketch, "overrides": overrides or None}
-    spec = post_json(SPECS_ESTIMATE_URL, est_payload)
-    if "error" in spec:
-        return None, None, None, None, f"Estimate error: {spec['error']}"
+User text:
+{user_text}
 
-    plan_payload = {"spec": spec, "target": "TLI" if mission_target.upper().startswith("TLI") else "LEO"}
-    mp = post_json(MISSION_PLAN_URL, plan_payload)
-    if "error" in mp:
-        return spec, None, None, None, f"Plan error: {mp['error']}"
+Return ONLY JSON with keys (all optional): 
+{{
+  "force_stages": <int 1..3>,
+  "min_diameter_m": <float>,
+  "target_payload_leo_kg": <float>,
+  "scale_m_per_px": <float>,
+  "target": "LEO" | "TLI",
+  "origin_hint": <string>
+}}
+Do not write any explanations; ONLY JSON.
+"""
+    try:
+        res = api_post(
+            "/ai/chat",
+            {
+                "prompt": prompt,
+                "temperature": 0.2,
+                "model": _model_id_from_choice(model_choice),
+            },
+        )
+        txt = strip_code_fences(res.get("text", "")).strip()
+        data = try_json(txt) or {}
+    except Exception:
+        data = {}
+    base = default_overrides()
+    base.update(coerce_overrides(data))
+    if isinstance(data.get("target"), str):
+        base["_target"] = data["target"].strip().upper()
+    if isinstance(data.get("origin_hint"), str):
+        base["_origin_hint"] = data["origin_hint"].strip()
+    base.update({k: v for k, v in _simple_text_parse(user_text).items() if v})
+    return base
 
-    svg_resp = requests.post(f"{BLUEPRINT_URL}?theme={st.session_state.bp_theme}", json={"spec": spec}, timeout=15)
-    svg_resp.raise_for_status()
-    svg = svg_resp.text
+def estimate_spec(sketch_boxes: List[dict], overrides: dict) -> dict:
+    sketch = {"objects": len(sketch_boxes), "bounding_boxes": sketch_boxes}
+    body = {
+        "scale_m_per_px": float(overrides.get("scale_m_per_px", 0.05)),
+        "sketch": sketch,
+        "overrides": {k: v for k, v in overrides.items()
+                      if k in ("force_stages", "min_diameter_m", "target_payload_leo_kg")}
+    }
+    return api_post("/specs/estimate", body)
 
-    traj_resp = requests.post(TRAJ_URL, json={"spec": spec, "plan": mp}, timeout=15)
-    traj_resp.raise_for_status()
-    traj_png = traj_resp.content
-
-    return spec, mp, svg, traj_png, None
-
-def call_concept_ai_only(spec: dict, target: str, origin_hint: str, kb_hits: Optional[List[dict]]) -> dict:
-    """Force AI-only composition for sites/lunar/BOM (no static fallback)."""
-    payload = {
+def compose_concept(spec: dict, target: str, origin_hint: Optional[str], model_choice: str) -> dict:
+    body = {
         "spec": spec,
         "target": target,
-        "origin_hint": origin_hint or None,
-        "kb_hits": kb_hits or []
+        "origin_hint": origin_hint,
+        "kb_hits": [],
+        "model": _model_id_from_choice(model_choice),
     }
-    # Force pure AI mode
-    url = f"{CONCEPT_COMPOSE_FROM_SPEC_URL}?mode=pure_ai"
-    return post_json(url, payload, timeout=60)
+    return api_post("/concept/compose_from_spec?mode=pure_ai", body)
 
-# ------------------ Sidebar ------------------
+def ask_advisor(question: str, spec: dict, target: str, concept: Optional[dict], model_choice: str) -> dict:
+    body = {
+        "question": question,
+        "spec": spec,
+        "target": target,
+        "concept": concept,
+        "style": "teacher",
+        "model": _model_id_from_choice(model_choice),
+    }
+    return api_post("/advisor/ask", body)
+
+def card_kv(label: str, value: Any) -> str:
+    return f"<div style='display:flex;justify-content:space-between'><span style='opacity:0.7'>{label}</span><strong>{value}</strong></div>"
+
+def money(n: Optional[float]) -> str:
+    try:
+        return f"${n:,.0f}"
+    except Exception:
+        return "-"
+
+# -------------------------------
+# Sidebar
+# -------------------------------
 with st.sidebar:
-    st.header("🧭 Mode")
-    st.session_state.mode = st.radio(
-        "Choose how you want to design:",
-        ["Guided (Beginner)", "Canvas (Advanced)"],
-        index=0,
-        help="Guided: no drawing needed. Canvas: draw shapes and set scale manually."
+    st.markdown("## ⚙️ Settings")
+    st.text_input("Backend URL", value=st.session_state.backend_url, key="backend_url_box", help="FastAPI base URL")
+    if st.button("Use URL"):
+        st.session_state.backend_url = st.session_state.backend_url_box
+        st.toast("Backend URL updated", icon="✅")
+
+    st.selectbox(
+        "Model",
+        options=[
+            "OpenAI – gpt-4o-mini",
+            "OpenAI – gpt-4o",
+            "OpenAI – o3-mini",
+            "OpenAI – gpt-4.1"
+        ],
+        index=[
+            "OpenAI – gpt-4o-mini","OpenAI – gpt-4o","OpenAI – o3-mini","OpenAI – gpt-4.1"
+        ].index(st.session_state.model_choice) if st.session_state.model_choice in [
+            "OpenAI – gpt-4o-mini","OpenAI – gpt-4o","OpenAI – o3-mini","OpenAI – gpt-4.1"
+        ] else 0,
+        key="model_choice",
+        help="Select the LLM used by the backend.",
     )
 
     st.markdown("---")
-    st.subheader("Model (for AI guidance)")
-    provider = st.selectbox("Provider", ["openai"], index=0)
-    model = st.text_input("Model", value=os.getenv("DEFAULT_MODEL", "gpt-4o-mini"))
-    temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    max_tokens_val = st.number_input("Max tokens (optional)", min_value=0, value=0)
-    max_tokens = None if max_tokens_val == 0 else int(max_tokens_val)
+    st.markdown("### ℹ️ Tips")
+    st.caption("Type: *Create a mission to deliver a 250 kg probe to the Moon from Michigan.*")
+    st.caption("Or use the canvas: draw rectangles for stages, add notes like 'Ohio' and an arrow to 'Moon'.")
 
-    with st.expander("Reference rockets (optional KB search)"):
-        kb_query = st.text_input("Search (e.g., falcon, saturn, kerosene)")
-        if st.button("Search KB"):
-            st.session_state.kb_hits = kb_search(kb_query, limit=3)
-        if st.session_state.kb_hits:
-            for r in st.session_state.kb_hits:
-                st.write(f"• **{r.get('name')}** — id `{r.get('id')}`, LEO payload {r.get('payload_leo_kg','?')} kg")
+# -------------------------------
+# Header
+# -------------------------------
+st.markdown(
+    """
+    <style>
+      .canvas-frame {border:1px solid #334155; border-radius:10px; padding:8px; background:#0b1220;}
+    </style>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="font-size:28px">🚀 Aero-AI Mission Studio</div>
+      <div style="opacity:0.7">one input, optional sketch — AI composes the rest</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown("")
 
-st.title("🚀 Aero-AI — Beginner-friendly Rocket Designer")
-st.caption("AI-composed mission context (sites, lunar targets, BoM) is enabled by default.")
+# -------------------------------
+# Canvas (optional)
+# -------------------------------
+# -------------------------------
+# Canvas (optional)
+# -------------------------------
+use_sketch = False
+canvas_result = None
+with st.expander("✏️ Doodle board (optional)"):
+    st.caption("Tip: Use **rect** for stages, **freedraw** to sketch. Then click **Use sketch**.")
 
-# ------------------ Guided Mode ------------------
-if st.session_state.mode == "Guided (Beginner)":
-    st.info("No drawing required. Pick your mission and basics, then click **Build Concept** (AI-only composition).")
-
-    colA, colB, colC = st.columns(3)
-    with colA:
-        preset = st.selectbox(
-            "Mission preset",
-            ["Small LEO (200 kg)", "Lunar Probe (TLI 300 kg)", "Custom"],
-            help="Presets fill reasonable defaults. Choose Custom to set your own."
+    cols = st.columns([3, 1, 1])
+    with cols[0]:
+        draw_mode = st.radio(
+            "Drawing mode", options=["rect", "freedraw", "transform"],
+            horizontal=True, index=0, key="draw_mode"
         )
-    with colB:
-        stage_count = st.selectbox("Stages", [2, 3], index=0)
-    with colC:
-        upper_prop = st.selectbox("Upper stage propellant", ["auto", "LH2/LOX", "RP1/LOX"], index=0)
+    with cols[1]:
+        canvas_w = st.slider("Width", 800, 1600, st.session_state.get("prev_canvas_w", 1100), 50)
+    with cols[2]:
+        canvas_h = st.slider("Height", 300, 800, st.session_state.get("prev_canvas_h", 450), 10)
 
-    if preset == "Small LEO (200 kg)":
-        mission_target = "LEO"
-        payload_target = 200
-        height_m = 20.0
-        min_diam_m = 1.2
-    elif preset == "Lunar Probe (TLI 300 kg)":
-        mission_target = "TLI"
-        payload_target = 300
-        height_m = 30.0
-        min_diam_m = 1.8
+    # If size changed, bump version so Streamlit rebuilds the widget
+    if canvas_w != st.session_state.get("prev_canvas_w") or canvas_h != st.session_state.get("prev_canvas_h"):
+        st.session_state.canvas_version += 1
+        st.session_state["prev_canvas_w"] = canvas_w
+        st.session_state["prev_canvas_h"] = canvas_h
+
+    c = st.columns([5, 1])
+    with c[0]:
+        st.markdown('<div class="canvas-frame">', unsafe_allow_html=True)
+        # Unique widget key includes version AND size so it refreshes on resize/clear
+        widget_key = f"mission_canvas_widget_v{st.session_state.canvas_version}_{canvas_w}x{canvas_h}"
+        canvas_result = st_canvas(
+            fill_color="rgba(0, 0, 0, 0)",
+            stroke_width=3,
+            stroke_color="#0EA5E9",
+            background_color="#0b1220",
+            height=canvas_h,
+            width=canvas_w,
+            drawing_mode=st.session_state.draw_mode,
+            key=widget_key,
+            display_toolbar=True,
+            update_streamlit=True,
+        )
+        if not (canvas_result and canvas_result.json_data and canvas_result.json_data.get("objects")):
+            st.caption("Canvas is empty — click and drag to draw.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        # Save JSON under a state key DIFFERENT from the widget key to avoid Streamlit collisions
+        if canvas_result is not None:
+            st.session_state["mission_canvas_json"] = canvas_result.json_data
+    with c[1]:
+        use_sketch = st.button("Use sketch")
+        if st.button("Clear"):
+            st.session_state.canvas_version += 1
+            st.session_state.mission_canvas_json = None
+            st.rerun()
+
+
+# -------------------------------
+# Chat history
+# -------------------------------
+for msg in st.session_state.history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg.get("concept"):
+            concept = msg["concept"]
+            bom = concept.get("bom") or {}
+            total = bom.get("total_est_cost")
+            st.markdown("**Concept summary**")
+            st.markdown(
+                card_kv("Launch sites", len(concept.get("launch_sites", []))) +
+                card_kv("Lunar sites", len(concept.get("lunar_sites", []))) +
+                card_kv("BoM total", money(total)),
+                unsafe_allow_html=True
+            )
+
+# -------------------------------
+# Input or Use-sketch trigger
+# -------------------------------
+user_text = st.chat_input("Describe or ask anything… e.g., 'Create a lunar mission from Michigan'")
+
+run_from_sketch = bool(use_sketch)  # always run if click Use sketch
+should_run = bool(user_text) or run_from_sketch
+
+if should_run:
+    effective_text = user_text or "Create a concept from the sketch. Infer origin/target from sketch labels if present; otherwise choose sensible defaults."
+
+    # Show user msg
+    st.session_state.history.append({"role": "user", "content": effective_text})
+    with st.chat_message("user"):
+        st.markdown(effective_text)
+        if run_from_sketch and not user_text:
+            st.caption("Using sketch only (no text).")
+
+    # 1) LLM infers parameters
+    with st.spinner("Inferring mission parameters with AI…"):
+        ov = llm_overrides_from_text(effective_text, st.session_state.model_choice)
+
+    target = ov.get("_target", st.session_state.last_target) or "LEO"
+    origin_hint = ov.get("_origin_hint", st.session_state.last_origin)
+
+    # 2) Sketch boxes
+    sketch_boxes: List[dict] = []
+    canvas_json = st.session_state.get("mission_canvas_json")
+    if canvas_json:
+        sketch_boxes = fallback_boxes_from_canvas_json(canvas_json)
+    if not sketch_boxes:
+        sketch_boxes = ensure_two_stage_boxes(sketch_boxes)
+
+    # 3) Estimate spec
+    try:
+        spec = estimate_spec(sketch_boxes, ov)
+        st.session_state.last_spec = spec
+    except Exception as e:
+        with st.chat_message("assistant"):
+            st.error(f"Failed to estimate spec: {e}")
+        st.stop()
+
+    # 4) Compose concept
+    try:
+        concept = compose_concept(
+            spec, target=target, origin_hint=origin_hint,
+            model_choice=st.session_state.model_choice
+        )
+        st.session_state.last_concept = concept
+        st.session_state.last_target = target
+        st.session_state.last_origin = origin_hint
+    except Exception as e:
+        with st.chat_message("assistant"):
+            st.error(f"Compose failed: {e}")  # shows FastAPI 'detail' if present
+        st.stop()
+
+    # 5) If concept looks empty, auto-ask Advisor for alternatives
+    empty_concept = (len(concept.get("launch_sites", [])) == 0 and len(concept.get("lunar_sites", [])) == 0)
+    advisor_answer = None
+    if empty_concept:
+        try:
+            fallback_q = (
+                f"The concept for '{effective_text}' returned empty or non-viable. "
+                f"Suggest a feasible alternative plan, explain constraints (e.g., launch sites near origin), "
+                f"and propose concrete next actions."
+            )
+            advisor = ask_advisor(fallback_q, spec, target, concept, model_choice=st.session_state.model_choice)
+            advisor_answer = advisor.get("answer")
+        except Exception:
+            advisor_answer = None
     else:
-        col1, col2 = st.columns(2)
-        with col1:
-            mission_target = st.selectbox("Mission target", ["LEO", "TLI (Moon)"], index=0)
-            payload_target = st.number_input("Target payload to LEO (kg) (approx.)", min_value=0, value=200)
-        with col2:
-            height_m = st.number_input("Total rocket height (m)", min_value=5.0, value=25.0, step=0.5)
-            min_diam_m = st.number_input("Minimum diameter (m)", min_value=0.5, value=1.2, step=0.1)
-
-    st.markdown("### Appearance")
-    st.session_state.bp_theme = st.selectbox("Blueprint theme", ["blueprint", "light"], index=0)
-
-    origin_hint = st.text_input("Launch origin (city/state/site, e.g., 'Louisiana', 'New Orleans')", value="")
-
-    st.markdown("### Build")
-    if st.button("Build Concept"):
-        with st.spinner("Estimating spec & plan + generating AI concept..."):
-            spec, mp, svg, traj_png, err = guided_estimate_and_plan(
-                height_m=height_m,
-                min_diameter_m=min_diam_m,
-                payload_target_kg=payload_target,
-                stage_count=int(stage_count),
-                upper_prop=None if upper_prop == "auto" else upper_prop,
-                mission_target=mission_target,
-            )
-            if err:
-                st.error(err)
-            else:
-                st.session_state.spec_result = spec
-                st.session_state.mission_plan = mp
-                st.session_state.blueprint_svg = svg
-                st.session_state.last_run_ok = True
-
-                # AI-only composition (sites, lunar, BoM)
-                target_str = "TLI" if mission_target.upper().startswith("TLI") else "LEO"
-                concept = call_concept_ai_only(spec, target_str, origin_hint, st.session_state.kb_hits)
-                if "error" in concept:
-                    st.error(concept["error"])
-                    st.session_state.concept_result = None
-                else:
-                    st.session_state.concept_result = concept
-
-        if st.session_state.last_run_ok:
-            st.success("Concept ready!")
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                st.subheader("Spec Draft (deterministic for testing)")
-                with st.expander("Show JSON", expanded=False):
-                    st.json(st.session_state.spec_result)
-                st.subheader("Mission Plan (deterministic for testing)")
-                with st.expander("Show JSON", expanded=False):
-                    st.json(st.session_state.mission_plan)
-            with c2:
-                st.subheader("Blueprint")
-                if st.session_state.blueprint_svg:
-                    components.html(st.session_state.blueprint_svg, height=650, scrolling=True)
-
-            st.subheader("Trajectory Sketch")
+        if effective_text.strip().endswith("?"):
             try:
-                if traj_png:
-                    st.image(traj_png, caption="Ascent & Transfer (illustrative)", use_column_width=True)
-                else:
-                    resp = requests.post(TRAJ_URL, json={
-                        "spec": st.session_state.spec_result, "plan": st.session_state.mission_plan
-                    }, timeout=15)
-                    resp.raise_for_status()
-                    st.image(resp.content, caption="Ascent & Transfer (illustrative)", use_column_width=True)
-            except Exception as e:
-                st.info(f"Trajectory sketch unavailable: {e}")
+                advisor = ask_advisor(effective_text, spec, target, concept, model_choice=st.session_state.model_choice)
+                advisor_answer = advisor.get("answer")
+            except Exception:
+                advisor_answer = None
 
-            # -------- AI Sections (no static fallback) --------
-            concept = st.session_state.concept_result or {}
-            st.markdown("## 🌐 AI-Composed Mission Context")
-            if concept.get("note"):
-                st.info(concept["note"])
+    # 6) Render assistant reply
+    with st.chat_message("assistant"):
+        report_md = concept.get("report_md")
 
-            st.markdown("### Launch Sites (AI-curated)")
-            if concept.get("launch_sites"):
-                for i, s in enumerate(concept["launch_sites"][:5], start=1):
-                    badge = "✅" if s.get("faa_licensed") else "ℹ️"
-                    st.write(f"{i}. {badge} **{s.get('name','?')}** "
-                             f"({s.get('state','?')}, {s.get('country','?')}) — "
-                             f"{s.get('type','?')} | score {s.get('suitability_score',0):.2f}")
-                    if s.get("why"): st.caption(s["why"])
+        if empty_concept and advisor_answer:
+            st.warning("Initial concept looked non-viable. Here’s a guided alternative:")
+            st.markdown(advisor_answer.get("answer_md", ""))
+        else:
+            if report_md:
+                st.markdown(report_md)
             else:
-                st.warning("AI did not return any sites.")
+                st.markdown("**Concept created.**")
 
-            st.markdown("### Candidate Lunar Sites (AI-curated)")
-            if concept.get("lunar_sites"):
-                for ls in concept["lunar_sites"]:
-                    st.write(f"• **{ls.get('name','?')}** — " + ", ".join(ls.get("traits", [])))
-                    if ls.get("why"): st.caption(ls["why"])
-            else:
-                st.warning("AI did not return lunar sites.")
+        # KPIs
+        bom = concept.get("bom") or {}
+        total = bom.get("total_est_cost")
+        kpi_cols = st.columns(3)
+        with kpi_cols[0]:
+            st.metric("Launch sites", len(concept.get("launch_sites", [])))
+        with kpi_cols[1]:
+            st.metric("Lunar sites", len(concept.get("lunar_sites", [])))
+        with kpi_cols[2]:
+            st.metric("BoM total", money(total))
 
-            st.markdown("### Bill of Materials & Cost (AI-curated)")
-            if concept.get("bom"):
-                bom = concept["bom"]
-                total = bom.get("total_est_cost", 0)
-                currency = bom.get("currency", "USD")
-                st.write(f"**Total Estimated Cost:** ~{currency} {total:,.0f} ({bom.get('uncertainty','')})")
-                for it in bom.get("items", []):
-                    qty = it.get("qty")
-                    uom = it.get("uom","")
-                    qty_txt = (f"{qty:.0f} {uom}".strip()) if isinstance(qty, (int,float)) else (f"{qty} {uom}".strip() if qty else uom)
-                    st.write(f"• {it.get('item','?')}: {qty_txt} → {currency} {it.get('est_cost',0):,.0f}")
-            else:
-                st.warning("AI did not return a BoM.")
+        st.markdown("---")
 
-# ------------------ Canvas Mode ------------------
-else:
-    st.info("Draw simple rectangles/circles for stages. Add a long curved path if you want a Moon mission.")
-    with st.expander("Canvas & Scale", expanded=True):
-        colL, colR = st.columns([3, 1])
-        with colL:
-            canvas_result = st_canvas(
-                fill_color="rgba(255, 165, 0, 0.0)",
-                stroke_width=3,
-                stroke_color="#222222",
-                background_color="#ffffff",
-                height=350,
-                width=700,
-                drawing_mode=st.selectbox("Mode", ["freedraw", "line", "rect", "circle", "transform"], index=2),
-                key="canvas",
-            )
-        with colR:
-            scale_m_per_px = st.number_input(
-                "Scale (meters per pixel)",
-                min_value=0.0001,
-                value=0.05,
-                step=0.01,
-                help="Example: 0.05 m/px ≈ 20 px per meter",
-            )
-            payload_target = st.number_input("Target payload to LEO (kg, optional)", min_value=0, value=0)
-            force_stages = st.selectbox("Stages", ["auto", "2", "3"], index=0)
-            upper_prop = st.selectbox("Upper stage propellant", ["auto", "LH2/LOX", "RP1/LOX"], index=0)
-            min_diam = st.number_input("Minimum diameter (m, optional)", min_value=0.0, value=0.0, step=0.1)
-            st.session_state.bp_theme = st.selectbox("Blueprint theme", ["blueprint", "light"], index=0)
-            origin_hint = st.text_input("Launch origin (optional)", value="")
-
-    # Extract sketch + detect "Moon path"
-    implied_target = None
-    if canvas_result is not None:
-        if canvas_result.image_data is not None:
-            img = Image.fromarray(canvas_result.image_data.astype("uint8"))
-            st.session_state.sketch_b64 = pil_to_base64(img)
-
-        sketch_meta = {"objects": 0, "bounding_boxes": []}
-        objs = canvas_result.json_data or {}
-        if isinstance(objs, dict) and "objects" in objs:
-            sketch_meta["objects"] = len(objs["objects"])
-            for o in objs["objects"]:
-                left = o.get("left"); top = o.get("top")
-                width = o.get("width"); height = o.get("height")
-                if None not in (left, top, width, height):
-                    sketch_meta["bounding_boxes"].append(
-                        {"left": round(float(left), 2), "top": round(float(top), 2),
-                         "width": round(float(width), 2), "height": round(float(height), 2)}
-                    )
-                if (o.get("type") == "path") or (o.get("path")):
-                    path_len = len(o.get("path", [])) if isinstance(o.get("path"), list) else 0
-                    w = float(o.get("width") or 0); h = float(o.get("height") or 0)
-                    if path_len > 40 or w > 350 or h > 220:
-                        implied_target = "TLI"
-        st.session_state.sketch_meta = sketch_meta
-
-    target_choice = st.selectbox("Mission target", ["LEO", "TLI (Moon)"], index=1 if implied_target == "TLI" else 0)
-
-    colA, colB, colC = st.columns([1, 1, 1])
-    with colA:
-        if st.button("Estimate"):
-            if not st.session_state.sketch_meta.get("bounding_boxes"):
-                st.warning("Draw a couple of rectangles first.")
-            else:
-                overrides = {}
-                if payload_target > 0: overrides["target_payload_leo_kg"] = float(payload_target)
-                if force_stages in ("2", "3"): overrides["force_stages"] = int(force_stages)
-                if upper_prop != "auto": overrides["preferred_upper_propellant"] = upper_prop
-                if min_diam > 0: overrides["min_diameter_m"] = float(min_diam)
-
-                payload = {
-                    "scale_m_per_px": float(scale_m_per_px),
-                    "sketch": {
-                        "objects": int(st.session_state.sketch_meta["objects"]),
-                        "bounding_boxes": st.session_state.sketch_meta["bounding_boxes"],
-                    },
-                    "overrides": overrides or None,
-                }
-                with st.spinner("Estimating specs..."):
-                    st.session_state.spec_result = post_json(SPECS_ESTIMATE_URL, payload)
-                if "error" in st.session_state.spec_result:
-                    st.error(st.session_state.spec_result["error"])
-                else:
-                    st.success("Spec draft ready.")
-    with colB:
-        if st.button("Blueprint"):
-            if not st.session_state.spec_result or "error" in (st.session_state.spec_result or {}):
-                st.info("Run Estimate first.")
-            else:
-                r = requests.post(
-                    f"{BLUEPRINT_URL}?theme={st.session_state.bp_theme}",
-                    json={"spec": st.session_state.spec_result},
-                    timeout=15
-                )
-                if r.status_code == 200:
-                    st.session_state.blueprint_svg = r.text
-                    st.success("Blueprint rendered.")
-                else:
-                    st.error(f"Blueprint failed: {r.text}")
-    with colC:
-        if st.button("Plan + AI Concept"):
-            if not st.session_state.spec_result or "error" in (st.session_state.spec_result or {}):
-                st.info("Run Estimate first.")
-            else:
-                tgt = "TLI" if target_choice.startswith("TLI") else "LEO"
-                plan_payload = {"spec": st.session_state.spec_result, "target": tgt}
-                with st.spinner("Planning mission..."):
-                    st.session_state.mission_plan = post_json(MISSION_PLAN_URL, plan_payload)
-                if "error" in st.session_state.mission_plan:
-                    st.error(st.session_state.mission_plan["error"])
-                else:
-                    st.success("Mission plan ready.")
-                    # AI-only composition
-                    with st.spinner("AI composing launch sites, lunar targets, and BoM..."):
-                        concept = call_concept_ai_only(st.session_state.spec_result, tgt, origin_hint, st.session_state.kb_hits)
-                        if "error" in concept:
-                            st.error(concept["error"])
-                            st.session_state.concept_result = None
-                        else:
-                            st.session_state.concept_result = concept
-
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.session_state.spec_result and "error" not in st.session_state.spec_result:
-            st.subheader("Spec Draft (deterministic for testing)")
-            with st.expander("Show JSON", expanded=False):
-                st.json(st.session_state.spec_result)
-        if st.session_state.mission_plan and "error" not in st.session_state.mission_plan:
-            st.subheader("Mission Plan (deterministic for testing)")
-            with st.expander("Show JSON", expanded=False):
-                st.json(st.session_state.mission_plan)
-
-        # AI-only sections
-        concept = st.session_state.concept_result or {}
-        st.markdown("## 🌐 AI-Composed Mission Context")
-        if concept.get("note"): st.info(concept["note"])
-
-        st.markdown("### Launch Sites (AI-curated)")
         if concept.get("launch_sites"):
-            for i, s in enumerate(concept["launch_sites"][:5], start=1):
-                badge = "✅" if s.get("faa_licensed") else "ℹ️"
-                st.write(f"{i}. {badge} **{s.get('name','?')}** "
-                         f"({s.get('state','?')}, {s.get('country','?')}) — "
-                         f"{s.get('type','?')} | score {s.get('suitability_score',0):.2f}")
-                if s.get("why"): st.caption(s["why"])
-        else:
-            st.warning("AI did not return sites.")
+            st.subheader("Launch site options")
+            for s in concept["launch_sites"]:
+                cols = st.columns([3, 1, 1])
+                with cols[0]:
+                    st.markdown(f"**{s.get('name','?')}** · {s.get('state','')}, {s.get('country','')}")
+                    st.caption(s.get("why", ""))
+                with cols[1]:
+                    score = (s.get("suitability_score") or 0) * 100
+                    st.metric("Suitability", f"{score:.0f}%")
+                with cols[2]:
+                    st.caption(f"Type: {s.get('type','unknown')}")
+                    st.caption(f"FAA: {'Yes' if s.get('faa_licensed') else '—'}")
 
-        st.markdown("### Candidate Lunar Sites (AI-curated)")
         if concept.get("lunar_sites"):
-            for ls in concept.get("lunar_sites", []):
-                st.write(f"• **{ls.get('name','?')}** — " + ", ".join(ls.get("traits", [])))
-                if ls.get("why"): st.caption(ls["why"])
-        else:
-            st.warning("AI did not return lunar sites.")
+            st.subheader("Lunar site candidates")
+            for ls in concept["lunar_sites"]:
+                cols = st.columns([3, 2])
+                with cols[0]:
+                    st.markdown(f"**{ls.get('name','?')}**")
+                    st.caption(ls.get("why", ""))
+                with cols[1]:
+                    traits = ", ".join(ls.get("traits", [])[:6])
+                    st.caption(f"Traits: {traits}")
 
-        st.subheader("Trajectory Sketch")
-        if st.session_state.spec_result and st.session_state.mission_plan and "error" not in (st.session_state.mission_plan or {}):
-            try:
-                resp = requests.post(TRAJ_URL, json={
-                    "spec": st.session_state.spec_result,
-                    "plan": st.session_state.mission_plan
-                }, timeout=15)
-                resp.raise_for_status()
-                st.image(resp.content, caption="Ascent & Transfer (illustrative)", use_column_width=True)
-            except Exception as e:
-                st.info(f"Trajectory sketch unavailable: {e}")
-        else:
-            st.info("Run Estimate + Plan first.")
-    with c2:
-        st.subheader("Blueprint")
-        if st.session_state.blueprint_svg:
-            components.html(st.session_state.blueprint_svg, height=650, scrolling=True)
-        else:
-            st.info("Click Blueprint after Estimate.")
+        if bom.get("items"):
+            st.subheader("Bill of Materials (concept level)")
+            st.table([
+                {"Item": it.get("item","?"), "Qty": it.get("qty","—"), "UoM": it.get("uom","—"), "Est. Cost": money(it.get("est_cost"))}
+                for it in bom.get("items", [])
+            ])
+            st.markdown(f"**Total (est.)**: {money(bom.get('total_est_cost'))}  \n_Uncertainty_: {bom.get('uncertainty','—')}")
 
-    st.markdown("---")
-    st.subheader("Ask the AI (advanced)")
-    default_prompt = (
-        "Summarize the design and suggest improvements. "
-        "Use SPEC_DRAFT and MISSION_PLAN strictly; do not invent numbers."
-    )
-    user_text = st.text_area("Prompt", value=default_prompt, height=120)
-    if st.button("Get AI Guidance"):
-        prompt = build_prompt(
-            user_text=user_text,
-            kb_hits=st.session_state.kb_hits,
-            sketch_meta=st.session_state.sketch_meta,
-            sketch_b64=st.session_state.sketch_b64,
-            spec_result=st.session_state.spec_result if st.session_state.spec_result and "error" not in st.session_state.spec_result else None,
-            mission_plan=st.session_state.mission_plan if st.session_state.mission_plan and "error" not in st.session_state.mission_plan else None,
-        )
-        with st.spinner("Calling /ai/chat ..."):
-            res = call_ai(prompt, temperature=temperature, max_tokens=max_tokens, provider=provider, model=model)
-        if "error" in res:
-            st.error(res["error"])
-        else:
-            st.success("AI guidance")
-            st.write(res.get("text", "(no text)"))
+    st.session_state.history.append({
+        "role": "assistant",
+        "content": (advisor_answer or {}).get("answer_md") if empty_concept else (concept.get("report_md") or "Concept created."),
+        "concept": concept
+    })
+
+    st.rerun()

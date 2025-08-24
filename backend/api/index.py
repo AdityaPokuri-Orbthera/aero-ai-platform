@@ -8,6 +8,7 @@ from backend.api.routes.kb_routes import router as kb_router
 from backend.api.routes.specs_routes import router as specs_router
 from backend.api.routes.mission_routes import router as mission_router
 from backend.api.routes.concept_routes import router as concept_router
+from backend.api.routes.advisor_routes import router as advisor_router
 
 app = FastAPI(title="Aero-AI Backend")
 
@@ -21,3 +22,4 @@ app.include_router(kb_router)
 app.include_router(specs_router)
 app.include_router(mission_router)
 app.include_router(concept_router)
+app.include_router(advisor_router)
